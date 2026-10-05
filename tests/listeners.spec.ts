@@ -40,22 +40,44 @@ function makeAgent(id: string, cwd = '/work/repo') {
 }
 
 /**
- * Build a fake context.
+ * Build a fake context that behaves like the real Cordis proxy.
  *
- * `agents` is omitted entirely when `roots` is not supplied, which is how the
- * "service missing" case is exercised.
+ * Two behaviours are modelled deliberately, because a double that cannot fail
+ * the way the real subject fails will happily pass while production is silent:
+ *
+ * 1. `ctx.agents` is a THROWING getter unless the service is "injected". The
+ *    real proxy raises `cannot get property "agents" without inject`, which
+ *    optional chaining does not catch - it short-circuits on nullish values,
+ *    not on a throwing accessor.
+ * 2. `ctx.get('agents')` reads the store directly and returns `undefined` when
+ *    the service is absent, never throwing. This is what the module reads
+ *    through.
+ *
+ * `withAgents: false` models a context where the registry is unreachable by
+ * BOTH routes, which is the branch where the module now delivers rather than
+ * staying silent (docs/CONTRACT.md §9).
  */
 function makeContext(options: { roots?: unknown[]; withAgents?: boolean } = {}): FakeContext & { ctx: unknown } {
   const registrations: Registration[] = []
+  const service = { roots: () => options.roots ?? [] }
   const ctx: Record<string, unknown> = {
     on(event: string, handler: (...args: never[]) => unknown) {
       registrations.push({ event, handler })
       return () => false
     },
+    // The direct-store read: undefined when the service is not reachable.
+    get(name: string) {
+      return name === 'agents' && options.withAgents !== false ? service : undefined
+    },
   }
-  // Present unless explicitly asked for a context without the service.
   if (options.withAgents !== false) {
-    ctx['agents'] = { roots: () => options.roots ?? [] }
+    ctx['agents'] = service
+  } else {
+    // A throwing accessor, exactly like the proxy trap.
+    Object.defineProperty(ctx, 'agents', {
+      get() { throw new Error('cannot get property "agents" without inject') },
+      configurable: true,
+    })
   }
   return { ctx, registrations } as FakeContext & { ctx: unknown }
 }
@@ -370,11 +392,24 @@ describe('root-agent filtering', () => {
     expect(sent).toEqual([])
   })
 
-  it('treats a missing agents service as not-a-root instead of throwing', () => {
+  /**
+   * The deliberate failure direction: an unreadable registry DELIVERS.
+   *
+   * This test previously asserted the opposite (stay silent), and that choice
+   * is what turned a one-line proxy quirk into a plugin that observed every
+   * event and sent nothing for hours: because each listener body must swallow
+   * its own errors, a throwing `isRoot` produced no warning, no log, and no
+   * notification - indistinguishable from a plugin that simply had no work.
+   *
+   * Over-delivering costs one redundant notification. Under-delivering cost a
+   * long debugging session. See docs/CONTRACT.md §9.
+   */
+  it('delivers rather than staying silent when the agents service is unreadable', () => {
     const { registrations, sent } = setup({ withAgents: false })
 
     expect(() => created(handlerFor(registrations, 'agent/created'), root)).not.toThrow()
-    expect(sent).toEqual([])
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({ hook_event_name: 'SessionStart', session_id: 'root-1' })
   })
 
   it('compares root identity, not structural equality', () => {

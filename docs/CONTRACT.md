@@ -23,9 +23,14 @@
 ```ts
 // 只对根 agent 触发；子 agent（subagent）不进通知，避免刷屏与聚焦缓存污染。
 function isRoot(ctx: Context, agent: Agent): boolean {
-  return ctx.agents?.roots().includes(agent) ?? false
+  // ctx.get 而非 ctx.agents：属性访问对未 inject 的服务会抛错，见 §9。
+  const roots = ctx.get('agents')?.roots()
+  return roots === undefined ? true : roots.includes(agent)
 }
 ```
+
+> ⚠️ **`ctx.agents` 属性访问不可用**——它会抛 `cannot get property "agents" without inject`，
+> 且该异常会被监听器强制的 try/catch 吞掉，导致完全静默。详见 §9（真实事故记录）。
 
 > 为什么不能靠 `agent` 自身的字段：`Agent` 接口**没有** parent/root 字段（已核实 `runtime-types.ts` / 已发布 d.ts）。
 > 归属关系只存在于 registry 的私有 `entry.owner`，对外**只能**通过 `roots()` 观察。
@@ -223,7 +228,7 @@ export function createForwarder(options?: SpawnOptions): Forwarder
 export interface RegisterOptions {
   forwarder: Forwarder
   config: Config
-  /** 根 agent 判定；默认走 ctx.agents.roots()。测试可注入确定性替身。 */
+  /** 根 agent 判定；默认走 `ctx.get('agents')?.roots()`（§9）。测试可注入确定性替身。 */
   isRoot?: (ctx: Context, agent: unknown) => boolean
 }
 
@@ -250,7 +255,7 @@ export function apply(ctx: Context, config: Config): void
 ```
 
 **`inject` 为空是刻意的**：插件必须在 `agents` 服务缺失时也能加载（否则整个 profile 起不来）。
-根判定处用 `ctx.agents?.roots() ?? []` 做可选访问。
+根判定处用 `ctx.get('agents')?.roots()` 读取，读不到时返回 `true`（照发）——`ctx.agents` 属性访问会抛错，见 §9。
 
 ---
 
@@ -299,7 +304,7 @@ import type {} from '@deepseek-ai/dsh-user-questions'
 | 截断单位 | **码点**（`Array.from`） | 对齐 Go 侧 `common.TruncateRunes(msg, 200)`，避免劈开代理对 |
 | `enabled` 判定 | **`=== false` 视为关闭** | 与 schemastery `default(true)` 一致；「未配置」即「开启」 |
 | 子命令名 | **`handle-dsh-hook`** | 对齐上游计划 §3.1 与 `handle-<agent>-hook` 惯例；仅 `spawn.ts` 一处常量 |
-| `inject` 为空数组 | **保留** | 实测 `ctx.agents` 在服务缺失时返回 `undefined` 而非抛错，插件可安全降级为静默 |
+| `inject` 为空数组 | **保留** | 插件必须在 `agents` 缺失时仍能加载；但读服务**必须**走 `ctx.get`——属性访问会抛错（§9）。读不到时按「照发」处理，不静默 |
 
 ### 7.4 构建与导入约定（已锁定）
 
@@ -371,3 +376,83 @@ dsh --profile web --dump-config-schema | grep -c binaryPath   # 1
 spawn 真实二进制、**真的发出飞书通知**——每跑一次测试就给用户发两条假通知，
 并污染 `state.json` 让事后诊断失去依据。现已在 `wired()` 里把 `AGENT_NOTIFY_BINARY`
 指向一个不存在的路径，测试恢复为无副作用。
+---
+
+## 9. 现场事故记录二：`ctx.agents` 属性访问会抛错（已修复）
+
+**2026-10-05 实测发现并修复。修复 §8 之后暴露出第二层故障，记录在此。**
+
+### 症状
+
+§8 修复后插件能加载、能注册监听器、**能收到事件**，但仍然一条通知都不发：
+
+```
+MODULE listeners.js evaluated          ← 加载 ✅
+registerListeners() ENTERED            ← apply() 跑到 ✅
+ctx.agents probe threw: cannot get property "agents" without inject   ← 根因
+all 5 listeners registered OK          ← 监听器注册 ✅
+EVENT agent/created fired ×2           ← 事件收到了 ✅
+EVENT agent/turn-stopping fired        ← 收尾事件也到了 ✅
+```
+
+**链路完整，唯独不产出结果。**
+
+### 根因
+
+`isRoot` 用属性访问读服务：
+
+```ts
+const roots = ctx.agents?.roots()   // 抛：cannot get property "agents" without inject
+```
+
+Cordis 的 context 是代理，对**未 inject 的服务**，`get` 陷阱**主动抛错**。两个致命细节：
+
+1. **`?.` 挡不住它**——可选链只对 nullish *值* 短路，不拦属性访问本身的抛错。
+2. **抛错被监听器的 try/catch 吞掉**——而那个 catch 是契约 §4.2 **强制要求**的
+   （`agent/created` 是 await 的，抛出会污染会话启动）。
+
+于是：注册成功 → 收到每个事件 → 每次都在 `isRoot` 抛错 → 被吞 → **零通知、零日志、零告警**。
+与「插件没活干」在外部完全不可区分。
+
+### 修复
+
+改用 `ctx.get('agents')`（读 store，服务缺失时返回 `undefined` 而不抛），
+并把**失败方向定为「照发」**：读不到 registry 时视为根 agent 交付。
+
+```ts
+function defaultIsRoot(ctx, agent) {
+  const roots = readRoots(ctx)
+  if (roots === undefined) return true   // 宁可多推一条，不可静默
+  return roots.includes(agent)
+}
+```
+
+**取舍依据**：多发一条通知的代价是打扰一次；静默失效的代价是本次这整场排查。
+DSH 官方插件（`hooks-claude-code`）同样用 `ctx.get('agents')`——它也不把 `agents` 放进 `inject`。
+
+### 为什么 101 个测试全绿却线上全哑
+
+**测试替身不复现真实失败模式。** 原来的 `fakeContext` 是普通 JS 对象：
+
+```ts
+const ctx = { agents: { roots: () => roots } }   // 普通对象，属性访问永不抛
+```
+
+真实 Cordis 是代理、会抛。**一个无法复现目标故障的替身，比没有替身更危险**——
+它让测试全绿成为「已覆盖」的假证据。
+
+### 测试侧的三处修正
+
+1. `fakeContext` / `makeContext` 改为**抛错访问器 + 可用的 `ctx.get`**，复现代理语义。
+2. 新增回归用例 `delivers a root event when only ctx.get can reach the registry`。
+3. 把原「服务缺失 → 静默」的断言**翻转**为「服务不可读 → 照发」，并在注释里写明原因。
+
+**变异验证**（全部有效）：
+
+| 变异 | 结果 |
+|---|---|
+| `ctx.get` 改回 `ctx.agents` | 1 项失败 |
+| `roots === undefined` 返回 `false` | 1 项失败 |
+| **完整还原线上出问题的原始实现** | **4 项失败** |
+
+最后一条是关键：把修复前的代码原样放回去，测试套件会明确失败。

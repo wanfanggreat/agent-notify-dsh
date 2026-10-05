@@ -228,20 +228,57 @@ export function registerListeners(ctx: Context, options: RegisterOptions): void 
  *
  * Two properties are load-bearing:
  *
- * - The optional access. `inject` is empty (index.ts), so the plugin must load
- *   with no `agents` service at all, and then degrade to silence instead of
- *   throwing during `apply()`.
  * - The identity comparison. `roots()` returns the registry's own instances, so
  *   only the exact live agent counts as root; a structural look-alike (e.g. a
  *   subagent that copied a root's header) must not pass. Durable session lineage
  *   (`header.parentSession`) is not runtime ownership and is deliberately not
  *   consulted.
+ * - The failure direction. An unreadable registry yields `true` (deliver), never
+ *   `false` (stay silent). See {@link readRoots}.
  *
  * @param ctx - the plugin's Cordis context.
  * @param agent - the event's agent, as received.
- * @returns whether the registry currently holds that exact agent as a root.
+ * @returns whether the registry currently holds that exact agent as a root, or
+ *   `true` when the registry cannot be read at all.
  */
 function defaultIsRoot(ctx: Context, agent: unknown): boolean {
-  const roots: readonly unknown[] | undefined = ctx.agents?.roots()
-  return roots?.includes(agent) ?? false
+  const roots = readRoots(ctx)
+  // Unreadable registry: assume root and deliver. Silence is precisely the
+  // failure mode this branch exists to prevent - see docs/CONTRACT.md §9.
+  if (roots === undefined) return true
+  return roots.includes(agent)
+}
+
+/**
+ * Read the live root agents, or `undefined` when the registry is unreachable.
+ *
+ * `ctx.get('agents')` rather than `ctx.agents`, and the difference is
+ * load-bearing. A Cordis context is a proxy whose `get` trap THROWS for a
+ * service the fiber has not injected:
+ *
+ *     cannot get property "agents" without inject
+ *
+ * Optional chaining does not help: `?.` short-circuits on a nullish *value*,
+ * never on a property access that throws. With the property form every
+ * listener's `isRoot` call threw inside its own mandated try/catch, which
+ * swallowed it - so the plugin registered all five listeners, received every
+ * event, and silently delivered nothing. `ctx.get` reads the store directly and
+ * answers `undefined` for an absent service instead.
+ *
+ * `inject: []` is deliberate (index.ts), so the service may legitimately be
+ * invisible here; that is the case this tolerates rather than the case it fears.
+ *
+ * @param ctx - the plugin's Cordis context.
+ * @returns the root agents, or `undefined` when they cannot be read.
+ */
+function readRoots(ctx: Context): readonly unknown[] | undefined {
+  try {
+    const agents = (ctx as { get?: (name: string) => unknown }).get?.('agents') as
+      | { roots?: () => readonly unknown[] }
+      | undefined
+    const roots = agents?.roots?.()
+    return Array.isArray(roots) ? roots : undefined
+  } catch {
+    return undefined
+  }
 }
