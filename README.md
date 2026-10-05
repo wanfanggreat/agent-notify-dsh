@@ -39,11 +39,12 @@ npx agent-notify        # 交互式向导：下载平台二进制 + 配置渠道
 ### 2. 再装 DSH 插件
 
 ```bash
-# 从 npm 安装
-dsh plugin --profile web add agent-notify-dsh
+# 从 GitHub 安装本仓库
+dsh plugin --profile web add github:wanfanggreat/agent-notify-dsh
 
-# 本地开发：以 link: 方式安装本仓库
-dsh plugin --profile web add link:/Users/liming/Documents/agent-notify-dsh
+# 本地开发：克隆后以 link: 方式安装（路径换成你自己的克隆位置）
+git clone git@github.com:wanfanggreat/agent-notify-dsh.git
+dsh plugin --profile web add link:$(pwd)/agent-notify-dsh
 ```
 
 注意：

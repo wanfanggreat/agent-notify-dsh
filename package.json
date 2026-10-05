@@ -19,6 +19,14 @@
     "LICENSE"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wanfanggreat/agent-notify-dsh.git"
+  },
+  "homepage": "https://github.com/wanfanggreat/agent-notify-dsh#readme",
+  "bugs": {
+    "url": "https://github.com/wanfanggreat/agent-notify-dsh/issues"
+  },
   "keywords": [
     "dsh",
     "dsh-plugin",

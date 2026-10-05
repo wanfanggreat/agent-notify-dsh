@@ -26,3 +26,13 @@ jobs:
         run: npm run typecheck
       - name: Test
         run: npm test
+      # lib/ is committed so a git-hosted install needs no build step. That
+      # makes it possible to edit src/ and forget to rebuild, shipping an
+      # artifact that no longer matches its source. Fail loudly instead.
+      - name: Verify committed lib/ matches src/
+        run: |
+          npm run build
+          if ! git diff --exit-code -- lib/; then
+            echo "::error::lib/ is stale. Run 'npm run build' and commit the result."
+            exit 1
+          fi

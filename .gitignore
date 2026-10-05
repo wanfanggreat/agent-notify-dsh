@@ -1,5 +1,13 @@
 node_modules/
-lib/
+
+# lib/ is deliberately TRACKED, not ignored.
+#
+# package.json points `main` at lib/index.js, and DSH's own `dsh plugin` notes
+# that a git-hosted plugin builds on install via its prepare script, which pnpm
+# blocks until the user allowlists it. Committing the 37 KB build output means
+# `dsh plugin add github:...` works with no build step and no allowBuilds dance.
+# Rebuild with `npm run build` and commit the result whenever src/ changes.
+# lib/
 *.log
 .DS_Store
 coverage/
