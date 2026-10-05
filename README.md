@@ -5,21 +5,25 @@
 
 ---
 
-## 当前状态：插件侧已完成，上游 Go 侧尚未交付
+## 当前状态：两侧均已开发完成
 
-本仓库**只产出 DSH 插件侧**（TypeScript）。要真正收到通知，还需要 agent-notify 本体提供
-`handle-dsh-hook` 子命令——该子命令目前**尚未实现**，属于上游仓库
-[agent-notify](https://github.com/hellolib/agent-notify) 的 **M2 任务**
-（见其 `docs/dsh-integration-plan.md` §5「M2 · Go 侧接入」）。
+本仓库产出 **DSH 插件侧**（TypeScript）；接收端 `handle-dsh-hook` 子命令属上游
+[agent-notify](https://github.com/hellolib/agent-notify) 的 **M2 任务**，其 Go 侧实现同样**已完成开发**
+（见上游 `docs/dsh-integration-plan.md` §5「M2 · Go 侧接入」：20 个包全绿、三平台构建通过、
+带 `testdata/dsh-hooks/` 事件夹具）。上游 Go 侧正通过
+[hellolib/agent-notify#58](https://github.com/hellolib/agent-notify/pull/58) 提交，
+**尚未合并进上游 `main`**，因此接收端有两种获取方式：
 
-> 如实说明：`handle-dsh-hook` 与本仓库是**两个**交付面。在本仓库安装插件、但上游 M2 未落地之前，
-> 插件会照常注册监听器并把载荷写到 stdin（或静默放弃定位失败的投递），但**不会产生任何通知**。
-> 这是「缺少接收端」，不是插件故障。
+- 用包含 `dsh` 支持的构建（从 PR 分支自行构建，或等 PR 合并后随正式版获取）；
+- 或先只装插件——插件会照常注册监听器并把载荷写到 stdin，但在接收端就位前**不会产生通知**。
 
-在上游仓库中确认接收端可用：
+> 后者是「缺少接收端」，不是插件故障；插件与 Go 侧可以各自独立安装和升级。
+
+确认接收端可用（需上游版本包含 `dsh` 支持）：
 
 ```bash
-agent-notify handle-dsh-hook --help   # M2 交付后此命令才存在
+agent-notify dsh print-hooks --help   # 列出 DSH 安装计划
+agent-notify handle-dsh-hook --help   # 存在即说明接收端已就绪
 ```
 
 ---
