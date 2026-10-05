@@ -20,6 +20,29 @@ import { createForwarder } from './spawn.js'
 export const name = 'agent-notify-dsh'
 
 /**
+ * The configuration schema, re-exported under the name Cordis looks for.
+ *
+ * This export is load-bearing, not a convenience. Cordis resolves a plugin's
+ * config with `resolveConfig`, which returns the raw value untouched when the
+ * module has no `Config` export:
+ *
+ *     function resolveConfig(runtime, config) {
+ *       if (!runtime.Config) return config
+ *       ...
+ *     }
+ *
+ * A patch row that omits `config:` then delivers `undefined` to `apply`, and
+ * the first property read (`config.binaryPath`) throws a TypeError before any
+ * listener is registered. The plugin appears to load - its module is imported
+ * and evaluated - while silently observing nothing at all.
+ *
+ * Exporting the schema makes Cordis validate the absent value into the
+ * schema's defaults instead, so a row without `config:` works as intended.
+ * Every DSH-shipped plugin exports its Config for this reason.
+ */
+export { Config }
+
+/**
  * No hard service dependency is declared.
  *
  * The plugin must load even when `agents` is absent, so that a profile

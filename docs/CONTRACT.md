@@ -306,3 +306,68 @@ import type {} from '@deepseek-ai/dsh-user-questions'
 相对导入一律带 **`.js`** 扩展名（NodeNext ESM 约定），源码用 `.ts`。产出物经 `tsc` 编译后
 `lib/index.js` 的 import 正确指向 `./config.js` / `./listeners.js` / `./spawn.js`。
 **不需要** `allowImportingTsExtensions`——那会让产物保留 `.ts` 说明符，反而破坏发布。
+---
+
+## 8. 现场事故记录：必须导出 `Config`（否则插件静默失效）
+
+**2026-10-05 实测发现并修复。这是本项目最隐蔽的一个 bug，务必保留这一节。**
+
+### 症状
+
+插件在真实 DSH 会话里**一条事件都观察不到**，但所有表面迹象都显示它装好了：
+
+- `dsh --dump-config` 的加载树里有 `agent-notify-dsh` 这一行
+- 插件模块被真正 import 并求值（诊断日志能打出来）
+- 没有任何 warning / error 输出
+- 手动跑 `agent-notify handle-dsh-hook` 一切正常
+
+### 根因
+
+Cordis 用 `resolveConfig` 解析插件配置，**模块没有 `Config` 导出时它把原始值原样传下去**：
+
+```js
+function resolveConfig(runtime, config) {
+  if (!runtime.Config) return config   // ← 没有 Config 导出就走这里
+  ...
+}
+```
+
+`cordis.patch.yml` 的 insert 行没有 `config:` 键，于是 `apply()` 收到 `undefined`；
+函数体第一行 `config.binaryPath` 立刻抛 `TypeError`，**发生在 `registerListeners()` 之前**——
+所以 5 个监听器一个都没注册，插件从此静默。
+
+### 为什么难发现
+
+失败形态与成功完全一致：模块加载了、行在配置树里、无任何告警。
+唯一可观察的差异是「永远没有事件」，而事件本身不产生任何日志。
+
+### 修复
+
+`src/index.ts` 末尾 `export { Config }`。这是**要件而非便利**：
+导出后 Cordis 会把缺省值经 schema 校验成默认值，没有 `config:` 键的行也能正常工作。
+DSH 官方插件（如 `dsh-hooks-claude-code`）全都导出 `Config`，正是这个原因。
+
+### 验证（前后对照）
+
+```bash
+# 修复前：插件 Config 字段在 schema 里出现 0 次
+dsh --profile web --dump-config-schema | grep -c binaryPath   # 0
+
+# 修复后：schema 能解析到插件的 Config
+dsh --profile web --dump-config-schema | grep -c binaryPath   # 1
+```
+
+回归测试在 `tests/integration.spec.ts`：
+
+- `exports the Config schema so Cordis can supply defaults`
+- `still applies when the loader supplies no config at all`
+- `throws when handed an unresolved undefined config (documents the hazard)`
+
+变异测试确认其有效：注释掉 `export { Config }` 后 2 项失败。
+
+### 附带修复：测试的副作用
+
+`tests/integration.spec.ts` 里两条用例调用**真实的** `apply()`，因而构造真实 forwarder、
+spawn 真实二进制、**真的发出飞书通知**——每跑一次测试就给用户发两条假通知，
+并污染 `state.json` 让事后诊断失去依据。现已在 `wired()` 里把 `AGENT_NOTIFY_BINARY`
+指向一个不存在的路径，测试恢复为无副作用。

@@ -13,7 +13,8 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
-import { apply, inject, name } from '../src/index.ts'
+import * as plugin from '../src/index.ts'
+import { apply, Config, inject, name } from '../src/index.ts'
 import { registerListeners } from '../src/listeners.ts'
 import type { DshHookPayload, Forwarder } from '../src/types.ts'
 
@@ -60,6 +61,42 @@ describe('plugin entry', () => {
   it('declares no hard service dependency so a partial profile still boots', () => {
     expect(inject).toEqual([])
   })
+
+  /**
+   * The plugin MUST export its Config schema.
+   *
+   * Cordis resolves a plugin's config with resolveConfig, which returns the raw
+   * value untouched when the module has no Config export. A patch row without a
+   * `config:` key then hands apply() an undefined config, and the first
+   * property read throws before any listener is registered.
+   *
+   * The failure is silent and shaped exactly like success: the module is
+   * imported and evaluated, the row shows up in dsh --dump-config, and no
+   * warning is printed - but zero events are ever observed. This regression
+   * cost a long debugging session; the assertion below is what catches it.
+   */
+  it('exports the Config schema so Cordis can supply defaults', () => {
+    expect(Config).toBeDefined()
+    expect(plugin.Config).toBe(Config)
+  })
+
+  it('still applies when the loader supplies no config at all', () => {
+    // Mirrors a cordis.patch.yml row with no `config:` key: Cordis validates
+    // the absent value through Config and hands apply() the schema defaults.
+    const resolved = Config(undefined)
+    expect(resolved).toMatchObject({ enabled: true, sessionStart: true, debug: false })
+
+    const { ctx, registrations } = fakeContext()
+    expect(() => apply(ctx as never, resolved)).not.toThrow()
+    expect(registrations).toHaveLength(5)
+  })
+
+  it('throws when handed an unresolved undefined config (documents the hazard)', () => {
+    // Guards the reason the export above is load-bearing: if a future change
+    // stops exporting Config, apply() receives undefined and dies here.
+    const { ctx } = fakeContext()
+    expect(() => apply(ctx as never, undefined as never)).toThrow(TypeError)
+  })
 })
 
 describe('apply() wiring', () => {
@@ -81,16 +118,30 @@ describe('apply() wiring', () => {
 describe('end-to-end event flow through apply()', () => {
   const root = agent('root-1')
 
-  /** Wire the real plugin over a fake harness and expose its handlers. */
+  /**
+   * Wire the real plugin over a fake harness and expose its handlers.
+   *
+   * AGENT_NOTIFY_BINARY points at a path that cannot exist, so apply()'s real
+   * forwarder resolves nothing and stays silent. Without this, the two tests
+   * below spawn the real installed binary and deliver real notifications on
+   * every run - loud side effects from a test suite that should be hermetic.
+   */
   function wired(roots: unknown[] = [root]) {
-    const { ctx, registrations } = fakeContext(roots)
-    apply(ctx as never, { enabled: true, sessionStart: true, debug: false })
-    const handlerFor = (event: string) => {
-      const found = registrations.find(r => r.event === event)
-      if (!found) throw new Error('no handler registered for ' + event)
-      return found.handler
+    const previous = process.env.AGENT_NOTIFY_BINARY
+    process.env.AGENT_NOTIFY_BINARY = '/nonexistent/agent-notify-for-tests'
+    try {
+      const { ctx, registrations } = fakeContext(roots)
+      apply(ctx as never, { enabled: true, sessionStart: true, debug: false })
+      const handlerFor = (event: string) => {
+        const found = registrations.find(r => r.event === event)
+        if (!found) throw new Error('no handler registered for ' + event)
+        return found.handler
+      }
+      return { handlerFor }
+    } finally {
+      if (previous === undefined) delete process.env.AGENT_NOTIFY_BINARY
+      else process.env.AGENT_NOTIFY_BINARY = previous
     }
-    return { handlerFor }
   }
 
   it('forwards an approval request as permission_required', async () => {
