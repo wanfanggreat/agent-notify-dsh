@@ -12,7 +12,13 @@
 **已合并进上游 `main`**（[#58](https://github.com/hellolib/agent-notify/pull/58)，
 合并提交 `421e47b`），并已随 **v0.18.0** 正式发布——Release 说明中列有该 PR。
 
-也就是说：**正常安装的上游版本已自带 DSH 接收端**，无需从分支自行构建。
+本插件是**独立的一层**，需要单独安装：上游 v0.18.0+ 只带来了**接收端**（`handle-dsh-hook`），
+**不会**自动把插件注册进 DSH profile——两边都到位才会收到通知。
+
+| 层 | 谁提供 | 是否自动 |
+|---|---|---|
+| 接收端 `handle-dsh-hook` | 上游 `agent-notify` v0.18.0+ | ✅ 装上游即自带 |
+| DSH profile 里的插件 | 本包 `agent-notify-dsh` | ❌ **需手动 add**（见下方安装） |
 
 > 唯一需要留意的版本边界是 **v0.18.0**：更早的版本（含 v0.17.x）不认识 `dsh`。
 > 若插件已装而二进制过旧，插件会照常注册监听器并把载荷写到 stdin，但**不会产生通知**——
@@ -42,13 +48,17 @@ npx agent-notify        # 交互式向导：下载平台二进制 + 配置渠道
 ### 2. 再装 DSH 插件
 
 ```bash
-# 从 GitHub 安装本仓库
-dsh plugin --profile web add github:wanfanggreat/agent-notify-dsh
+# 从 npm 安装（推荐）
+dsh plugin --profile web add agent-notify-dsh
 
 # 本地开发：克隆后以 link: 方式安装（路径换成你自己的克隆位置）
 git clone git@github.com:wanfanggreat/agent-notify-dsh.git
 dsh plugin --profile web add link:$(pwd)/agent-notify-dsh
 ```
+
+> 为什么优先 npm：从 git 安装时 DSH 会走 pnpm 的 `prepare` 构建，而 pnpm 默认
+> **拦截构建脚本**，用户需手动往 `pnpm-workspace.yaml` 加 `allowBuilds` 才能继续。
+> npm 包已含编译好的 `lib/`，无需构建。
 
 注意：
 
